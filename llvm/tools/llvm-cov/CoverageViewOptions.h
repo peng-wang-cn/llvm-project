@@ -46,6 +46,10 @@ struct CoverageViewOptions {
   bool SkipExpansions;
   bool SkipFunctions;
   bool SkipBranches;
+  // When showing reports, optionally respect LCOV exclusion markers in source
+  // files (e.g., LCOV_EXCL_LINE, LCOV_EXCL_START/STOP, and branch-only and
+  // exception-branch variants). Defaults to false for backward compatibility.
+  bool RespectLcovExclusions = false;
   bool BinaryCounters;
   OutputFormat Format;
   BranchOutputType ShowBranches;

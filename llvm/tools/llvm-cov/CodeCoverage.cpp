@@ -20,6 +20,8 @@
 #include "CoverageViewOptions.h"
 #include "RenderingSupport.h"
 #include "SourceCoverageView.h"
+#include "LcovMarkerScanner.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Debuginfod/BuildIDFetcher.h"
@@ -44,6 +46,7 @@
 #include "llvm/TargetParser/Triple.h"
 
 #include <functional>
+#include <atomic>
 #include <map>
 #include <optional>
 #include <system_error>
@@ -54,6 +57,12 @@ using namespace coverage;
 void exportCoverageDataToJson(const coverage::CoverageMapping &CoverageMapping,
                               const CoverageViewOptions &Options,
                               raw_ostream &OS);
+
+namespace {
+// Use canonical exclusion sets and scanner.
+using LcovExclSets = LcovExclusionSets;
+using llvm::scanLcovExclusionsFromBuffer;
+} // end anonymous namespace
 
 namespace {
 /// The implementation of the coverage tool.
@@ -102,6 +111,12 @@ private:
   /// Create source views for the branches of the view.
   void attachBranchSubViews(SourceCoverageView &View,
                             ArrayRef<CountedRegion> Branches);
+
+  /// Create source views for the branches of the view, with optional LCOV
+  /// exclusions used to filter out branch displays on excluded lines.
+  void attachBranchSubViews(SourceCoverageView &View,
+                            ArrayRef<CountedRegion> Branches,
+                            const LcovExclSets *Excl);
 
   /// Create source views for the MCDC records.
   void attachMCDCSubViews(SourceCoverageView &View,
@@ -321,13 +336,24 @@ void CodeCoverageTool::attachExpansionSubViews(
         SourceCoverageView::create(Expansion.Function.Name, SourceBuffer.get(),
                                    ViewOpts, std::move(ExpansionCoverage));
     attachExpansionSubViews(*SubView, SubViewExpansions, Coverage);
-    attachBranchSubViews(*SubView, SubViewBranches);
+    if (ViewOpts.RespectLcovExclusions) {
+      auto Excl = scanLcovExclusionsFromBuffer(SourceBuffer.get().getBuffer());
+      attachBranchSubViews(*SubView, SubViewBranches, &Excl);
+    } else {
+      attachBranchSubViews(*SubView, SubViewBranches);
+    }
     View.addExpansion(Expansion.Region, std::move(SubView));
   }
 }
 
 void CodeCoverageTool::attachBranchSubViews(SourceCoverageView &View,
                                             ArrayRef<CountedRegion> Branches) {
+  attachBranchSubViews(View, Branches, /*Excl=*/nullptr);
+}
+
+void CodeCoverageTool::attachBranchSubViews(SourceCoverageView &View,
+                                            ArrayRef<CountedRegion> Branches,
+                                            const LcovExclSets *Excl) {
   if (!ViewOpts.ShowBranchCounts && !ViewOpts.ShowBranchPercents)
     return;
 
@@ -341,6 +367,12 @@ void CodeCoverageTool::attachBranchSubViews(SourceCoverageView &View,
     while (NextBranch != EndBranch && CurrentLine == NextBranch->LineStart)
       ViewBranches.push_back(*NextBranch++);
 
+    if (Excl) {
+      if (Excl->LineExcluded.contains(CurrentLine) ||
+          Excl->BranchOnlyExcluded.contains(CurrentLine) ||
+          Excl->ExceptionBranchOnlyExcluded.contains(CurrentLine))
+        continue;
+    }
     View.addBranch(CurrentLine, std::move(ViewBranches));
   }
 }
@@ -383,7 +415,12 @@ CodeCoverageTool::createFunctionView(const FunctionRecord &Function,
                                          SourceBuffer.get(), ViewOpts,
                                          std::move(FunctionCoverage));
   attachExpansionSubViews(*View, Expansions, Coverage);
-  attachBranchSubViews(*View, Branches);
+  if (ViewOpts.RespectLcovExclusions) {
+    auto Excl = scanLcovExclusionsFromBuffer(SourceBuffer.get().getBuffer());
+    attachBranchSubViews(*View, Branches, &Excl);
+  } else {
+    attachBranchSubViews(*View, Branches);
+  }
   attachMCDCSubViews(*View, MCDCRecords);
 
   return View;
@@ -402,10 +439,49 @@ CodeCoverageTool::createSourceFileView(StringRef SourceFile,
   auto Branches = FileCoverage.getBranches();
   auto Expansions = FileCoverage.getExpansions();
   auto MCDCRecords = FileCoverage.getMCDCRecords();
+  std::optional<LcovExclSets> TopExcl;
+  if (ViewOpts.RespectLcovExclusions)
+    TopExcl = scanLcovExclusionsFromBuffer(SourceBuffer.get().getBuffer());
+  // One-time notice if EXCL_EXCEPTION_BR_* markers are present: behavior is
+  // approximated because llvm-cov doesn't differentiate exception-only
+  // branches at display time.
+  if (TopExcl && !TopExcl->ExceptionBranchOnlyExcluded.empty()) {
+    static std::atomic<bool> ExceptionApproxWarned{false};
+    bool already = ExceptionApproxWarned.exchange(true);
+    if (!already) {
+      warning("LCOV_EXCL_EXCEPTION_BR_*: llvm-cov show does not currently"
+              " distinguish exception-only branches for per-line display."
+              " These markers are treated as branch-only exclusions for"
+              " display and summaries.");
+    }
+  }
+  // Warn if any LCOV_UNREACHABLE_* lines have non-zero execution counts.
+  if (TopExcl && !TopExcl->UnreachableExcluded.empty()) {
+    unsigned Executed = 0;
+    for (const auto &LCS : getLineCoverageStats(FileCoverage)) {
+      unsigned L = LCS.getLine();
+      if (TopExcl->UnreachableExcluded.contains(L) && LCS.isMapped() &&
+          LCS.getExecutionCount() > 0)
+        ++Executed;
+    }
+    if (Executed > 0) {
+      warning((Twine("LCOV_UNREACHABLE_*: ") + Twine(Executed) +
+               " line(s) marked unreachable were executed;"
+               " llvm-cov show excludes these lines from reporting like LCOV,"
+               " but LCOV is expected to emit an error for executed"
+               " 'unreachable' coverpoints.")
+                  .str());
+    }
+  }
+  // Create the view after computing warnings and exclusions; Branches/Expansions
+  // arrays remain valid as they refer to coverage data that is moved into View.
   auto View = SourceCoverageView::create(SourceFile, SourceBuffer.get(),
                                          ViewOpts, std::move(FileCoverage));
   attachExpansionSubViews(*View, Expansions, Coverage);
-  attachBranchSubViews(*View, Branches);
+  if (TopExcl)
+    attachBranchSubViews(*View, Branches, &*TopExcl);
+  else
+    attachBranchSubViews(*View, Branches);
   attachMCDCSubViews(*View, MCDCRecords);
   if (!ViewOpts.ShowFunctionInstantiations)
     return View;
@@ -428,7 +504,10 @@ CodeCoverageTool::createSourceFileView(StringRef SourceFile,
         SubView = SourceCoverageView::create(
             Funcname, SourceBuffer.get(), ViewOpts, std::move(SubViewCoverage));
         attachExpansionSubViews(*SubView, SubViewExpansions, Coverage);
-        attachBranchSubViews(*SubView, SubViewBranches);
+        if (TopExcl)
+          attachBranchSubViews(*SubView, SubViewBranches, &*TopExcl);
+        else
+          attachBranchSubViews(*SubView, SubViewBranches);
         attachMCDCSubViews(*SubView, SubViewMCDCRecords);
       }
 
@@ -1028,6 +1107,11 @@ int CodeCoverageTool::doShow(int argc, const char **argv,
                                       cl::desc("Show directory coverage"),
                                       cl::cat(ViewCategory));
 
+  cl::opt<bool> RespectLcovExclusions(
+      "respect-lcov-exclusions", cl::Optional,
+      cl::desc("Respect LCOV EXCL markers (LINE/START/STOP, BR_*, and EXCEPTION_BR_*) in source when showing coverage"),
+      cl::cat(ViewCategory));
+
   cl::opt<bool> ShowCreatedTime("show-created-time", cl::Optional,
                                 cl::desc("Show created time for each page."),
                                 cl::init(true), cl::cat(ViewCategory));
@@ -1124,6 +1208,7 @@ int CodeCoverageTool::doShow(int argc, const char **argv,
   ViewOpts.BinaryCounters = BinaryCounters;
   ViewOpts.TabSize = TabSize;
   ViewOpts.ProjectTitle = ProjectTitle;
+  ViewOpts.RespectLcovExclusions = RespectLcovExclusions;
 
   if (ViewOpts.hasOutputDirectory()) {
     if (auto E = sys::fs::create_directories(ViewOpts.ShowOutputDirectory)) {

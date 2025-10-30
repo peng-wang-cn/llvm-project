@@ -15,9 +15,25 @@
 #define LLVM_COV_COVERAGESUMMARYINFO_H
 
 #include "llvm/ProfileData/Coverage/CoverageMapping.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace llvm {
+/// Represents LCOV exclusion markers parsed from a source file.
+struct LcovExclusionSets {
+  // Lines excluded from line coverage (and implicitly branches on those lines)
+  SmallDenseSet<unsigned, 32> LineExcluded;
+  // Lines excluded only from branch coverage.
+  SmallDenseSet<unsigned, 32> BranchOnlyExcluded;
+  // Lines excluded only from exception-branch coverage (best effort; LLVM
+  // coverage mapping does not currently differentiate exception branches in
+  // core APIs, so these may be treated as BranchOnlyExcluded by consumers).
+  SmallDenseSet<unsigned, 32> ExceptionBranchOnlyExcluded;
+  // Lines marked unreachable; for counting, treat like LineExcluded. Tools may
+  // also choose to warn if any of these lines have non-zero execution.
+  SmallDenseSet<unsigned, 32> UnreachableExcluded;
+};
+
 
 /// Provides information about region coverage for a function/file.
 class RegionCoverageInfo {
@@ -233,6 +249,12 @@ struct CoverageDataSummary {
   CoverageDataSummary(const coverage::CoverageData &CD,
                       ArrayRef<coverage::CountedRegion> CodeRegions);
 
+  // Construct a summary while excluding coverpoints on lines indicated by
+  // LCOV markers.
+  CoverageDataSummary(const coverage::CoverageData &CD,
+                      ArrayRef<coverage::CountedRegion> CodeRegions,
+                      const LcovExclusionSets *Excl);
+
   auto &operator+=(const CoverageDataSummary &RHS) {
     RegionCoverage += RHS.RegionCoverage;
     LineCoverage += RHS.LineCoverage;
@@ -254,6 +276,13 @@ struct FunctionCoverageSummary : CoverageDataSummary {
   /// mapping record.
   static FunctionCoverageSummary get(const coverage::CoverageMapping &CM,
                                      const coverage::FunctionRecord &Function);
+
+  /// Exclusion-aware variant: compute summary while skipping lines/branches
+  /// marked by LCOV exclusion markers.
+  static FunctionCoverageSummary
+  get(const coverage::CoverageMapping &CM,
+      const coverage::FunctionRecord &Function,
+      const LcovExclusionSets *Excl);
 
   /// Compute the code coverage summary for an instantiation group \p Group,
   /// given a list of summaries for each instantiation in \p Summaries.

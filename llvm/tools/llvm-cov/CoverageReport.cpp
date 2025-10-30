@@ -11,6 +11,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "CoverageReport.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "LcovMarkerScanner.h"
 #include "RenderingSupport.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Format.h"
@@ -214,6 +216,8 @@ unsigned getRedundantPrefixLen(ArrayRef<StringRef> Paths, unsigned LCP) {
 } // end anonymous namespace
 
 namespace llvm {
+
+// LCOV marker scanning is provided by LcovMarkerScanner.h
 
 void CoverageReport::render(const FileCoverageSummary &File,
                             raw_ostream &OS) const {
@@ -446,12 +450,22 @@ void CoverageReport::prepareSingleFileReport(const StringRef Filename,
     const coverage::CoverageMapping *Coverage,
     const CoverageViewOptions &Options, const unsigned LCP,
     FileCoverageSummary *FileReport, const CoverageFilter *Filters) {
+  // Parse LCOV exclusions once per file if requested.
+  std::optional<LcovExclusionSets> Excl;
+  if (Options.RespectLcovExclusions) {
+    if (auto BufOrErr = MemoryBuffer::getFile(Filename)) {
+      Excl = scanLcovExclusionsFromBuffer(BufOrErr.get()->getBuffer());
+    }
+  }
+
   for (const auto &Group : Coverage->getInstantiationGroups(Filename)) {
     std::vector<FunctionCoverageSummary> InstantiationSummaries;
     for (const coverage::FunctionRecord *F : Group.getInstantiations()) {
       if (!Filters->matches(*Coverage, *F))
         continue;
-      auto InstantiationSummary = FunctionCoverageSummary::get(*Coverage, *F);
+      FunctionCoverageSummary InstantiationSummary =
+          Excl ? FunctionCoverageSummary::get(*Coverage, *F, &*Excl)
+               : FunctionCoverageSummary::get(*Coverage, *F);
       FileReport->addInstantiation(InstantiationSummary);
       InstantiationSummaries.push_back(InstantiationSummary);
     }
