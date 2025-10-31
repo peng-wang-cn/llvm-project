@@ -162,14 +162,15 @@ bool SourceCoverageView::hasSubViews() const {
 std::unique_ptr<SourceCoverageView>
 SourceCoverageView::create(StringRef SourceName, const MemoryBuffer &File,
                            const CoverageViewOptions &Options,
-                           CoverageData &&CoverageInfo) {
+                           CoverageData &&CoverageInfo,
+                           const LcovExclusionSets *Exclusions) {
   switch (Options.Format) {
   case CoverageViewOptions::OutputFormat::Text:
     return std::make_unique<SourceCoverageViewText>(
-        SourceName, File, Options, std::move(CoverageInfo));
+        SourceName, File, Options, std::move(CoverageInfo), Exclusions);
   case CoverageViewOptions::OutputFormat::HTML:
     return std::make_unique<SourceCoverageViewHTML>(
-        SourceName, File, Options, std::move(CoverageInfo));
+        SourceName, File, Options, std::move(CoverageInfo), Exclusions);
   case CoverageViewOptions::OutputFormat::Lcov:
     // Unreachable because CodeCoverage.cpp should terminate with an error
     // before we get here.

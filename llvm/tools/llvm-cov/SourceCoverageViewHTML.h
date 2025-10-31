@@ -111,8 +111,10 @@ class SourceCoverageViewHTML : public SourceCoverageView {
 public:
   SourceCoverageViewHTML(StringRef SourceName, const MemoryBuffer &File,
                          const CoverageViewOptions &Options,
-                         coverage::CoverageData &&CoverageInfo)
-      : SourceCoverageView(SourceName, File, Options, std::move(CoverageInfo)) {
+                         coverage::CoverageData &&CoverageInfo,
+                         const LcovExclusionSets *Exclusions = nullptr)
+      : SourceCoverageView(SourceName, File, Options, std::move(CoverageInfo),
+                           Exclusions) {
   }
 };
 

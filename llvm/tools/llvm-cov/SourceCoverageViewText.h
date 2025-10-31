@@ -98,8 +98,10 @@ class SourceCoverageViewText : public SourceCoverageView {
 public:
   SourceCoverageViewText(StringRef SourceName, const MemoryBuffer &File,
                          const CoverageViewOptions &Options,
-                         CoverageData &&CoverageInfo)
-      : SourceCoverageView(SourceName, File, Options, std::move(CoverageInfo)) {
+                         CoverageData &&CoverageInfo,
+                         const LcovExclusionSets *Exclusions = nullptr)
+      : SourceCoverageView(SourceName, File, Options, std::move(CoverageInfo),
+                           Exclusions) {
   }
 };
 

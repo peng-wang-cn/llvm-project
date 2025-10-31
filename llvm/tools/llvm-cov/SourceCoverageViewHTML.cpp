@@ -928,6 +928,7 @@ void SourceCoverageViewHTML::renderLine(raw_ostream &OS, LineRef L,
                                         unsigned ExpansionCol, unsigned) {
   StringRef Line = L.Line;
   unsigned LineNo = L.LineNo;
+  bool Excluded = isExcludedLine(LineNo);
 
   // Steps for handling text-escaping, highlighting, and tooltip creation:
   //
@@ -974,6 +975,8 @@ void SourceCoverageViewHTML::renderLine(raw_ostream &OS, LineRef L,
   };
 
   auto CheckIfUncovered = [&](const CoverageSegment *S) {
+    if (Excluded)
+      return false;
     return S && (!S->IsGapRegion || (Color && *Color == "red")) &&
            S->HasCount && S->Count == 0;
   };
@@ -1055,10 +1058,17 @@ void SourceCoverageViewHTML::renderLineCoverageColumn(
   std::string Count;
   if (Line.isMapped())
     Count = tag("pre", formatBinaryCount(Line.getExecutionCount()));
-  std::string CoverageClass =
-      (Line.getExecutionCount() > 0)
-          ? "covered-line"
-          : (Line.isMapped() ? "uncovered-line" : "skipped-line");
+  // If the line is excluded via LCOV markers, treat it as skipped for styling
+  // purposes while still showing the execution count (typically 0).
+  std::string CoverageClass;
+  if (Line.getExecutionCount() > 0) {
+    CoverageClass = "covered-line";
+  } else if (Line.isMapped()) {
+    CoverageClass = isExcludedLine(Line.getLine()) ? "skipped-line"
+                                                   : "uncovered-line";
+  } else {
+    CoverageClass = "skipped-line";
+  }
   OS << tag("td", Count, CoverageClass);
 }
 

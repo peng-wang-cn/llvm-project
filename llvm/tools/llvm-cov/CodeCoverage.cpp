@@ -332,16 +332,17 @@ void CodeCoverageTool::attachExpansionSubViews(
 
     auto SubViewBranches = ExpansionCoverage.getBranches();
     auto SubViewExpansions = ExpansionCoverage.getExpansions();
-    auto SubView =
-        SourceCoverageView::create(Expansion.Function.Name, SourceBuffer.get(),
-                                   ViewOpts, std::move(ExpansionCoverage));
+    std::optional<LcovExclSets> Excl;
+    if (ViewOpts.RespectLcovExclusions)
+      Excl = scanLcovExclusionsFromBuffer(SourceBuffer.get().getBuffer());
+    auto SubView = SourceCoverageView::create(
+        Expansion.Function.Name, SourceBuffer.get(), ViewOpts,
+        std::move(ExpansionCoverage), Excl ? &*Excl : nullptr);
     attachExpansionSubViews(*SubView, SubViewExpansions, Coverage);
-    if (ViewOpts.RespectLcovExclusions) {
-      auto Excl = scanLcovExclusionsFromBuffer(SourceBuffer.get().getBuffer());
-      attachBranchSubViews(*SubView, SubViewBranches, &Excl);
-    } else {
+    if (Excl)
+      attachBranchSubViews(*SubView, SubViewBranches, &*Excl);
+    else
       attachBranchSubViews(*SubView, SubViewBranches);
-    }
     View.addExpansion(Expansion.Region, std::move(SubView));
   }
 }
@@ -411,16 +412,18 @@ CodeCoverageTool::createFunctionView(const FunctionRecord &Function,
   auto Branches = FunctionCoverage.getBranches();
   auto Expansions = FunctionCoverage.getExpansions();
   auto MCDCRecords = FunctionCoverage.getMCDCRecords();
+  std::optional<LcovExclSets> Excl;
+  if (ViewOpts.RespectLcovExclusions)
+    Excl = scanLcovExclusionsFromBuffer(SourceBuffer.get().getBuffer());
   auto View = SourceCoverageView::create(DC.demangle(Function.Name),
                                          SourceBuffer.get(), ViewOpts,
-                                         std::move(FunctionCoverage));
+                                         std::move(FunctionCoverage),
+                                         Excl ? &*Excl : nullptr);
   attachExpansionSubViews(*View, Expansions, Coverage);
-  if (ViewOpts.RespectLcovExclusions) {
-    auto Excl = scanLcovExclusionsFromBuffer(SourceBuffer.get().getBuffer());
-    attachBranchSubViews(*View, Branches, &Excl);
-  } else {
+  if (Excl)
+    attachBranchSubViews(*View, Branches, &*Excl);
+  else
     attachBranchSubViews(*View, Branches);
-  }
   attachMCDCSubViews(*View, MCDCRecords);
 
   return View;
@@ -476,7 +479,8 @@ CodeCoverageTool::createSourceFileView(StringRef SourceFile,
   // Create the view after computing warnings and exclusions; Branches/Expansions
   // arrays remain valid as they refer to coverage data that is moved into View.
   auto View = SourceCoverageView::create(SourceFile, SourceBuffer.get(),
-                                         ViewOpts, std::move(FileCoverage));
+                                         ViewOpts, std::move(FileCoverage),
+                                         TopExcl ? &*TopExcl : nullptr);
   attachExpansionSubViews(*View, Expansions, Coverage);
   if (TopExcl)
     attachBranchSubViews(*View, Branches, &*TopExcl);
@@ -502,7 +506,8 @@ CodeCoverageTool::createSourceFileView(StringRef SourceFile,
         auto SubViewBranches = SubViewCoverage.getBranches();
         auto SubViewMCDCRecords = SubViewCoverage.getMCDCRecords();
         SubView = SourceCoverageView::create(
-            Funcname, SourceBuffer.get(), ViewOpts, std::move(SubViewCoverage));
+          Funcname, SourceBuffer.get(), ViewOpts, std::move(SubViewCoverage),
+          TopExcl ? &*TopExcl : nullptr);
         attachExpansionSubViews(*SubView, SubViewExpansions, Coverage);
         if (TopExcl)
           attachBranchSubViews(*SubView, SubViewBranches, &*TopExcl);

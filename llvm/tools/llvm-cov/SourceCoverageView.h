@@ -175,6 +175,12 @@ class SourceCoverageView {
 
   bool BinaryCounters;
 
+  /// Optional LCOV exclusion information for the top-level file this view
+  /// represents. When provided and RespectLcovExclusions is enabled, excluded
+  /// lines should not be highlighted as uncovered in renderers.
+  const LcovExclusionSets *Exclusions = nullptr;
+  std::unique_ptr<LcovExclusionSets> OwnedExclusions;
+
   /// Get the first uncovered line number for the source file.
   unsigned getFirstUncoveredLineNo();
 
@@ -277,16 +283,31 @@ protected:
 
   SourceCoverageView(StringRef SourceName, const MemoryBuffer &File,
                      const CoverageViewOptions &Options,
-                     CoverageData &&CoverageInfo)
+                     CoverageData &&CoverageInfo,
+                     const LcovExclusionSets *Exclusions = nullptr)
       : SourceName(SourceName), File(File), Options(Options),
         CoverageInfo(std::move(CoverageInfo)),
         BinaryCounters(Options.BinaryCounters ||
-                       CoverageInfo.getSingleByteCoverage()) {}
+                       CoverageInfo.getSingleByteCoverage()) {
+    if (Exclusions) {
+      OwnedExclusions = std::make_unique<LcovExclusionSets>(*Exclusions);
+      this->Exclusions = OwnedExclusions.get();
+    }
+  }
+
+  /// Returns true if a line number is excluded from line coverage rendering.
+  bool isExcludedLine(unsigned LineNo) const {
+    if (!Options.RespectLcovExclusions || !Exclusions)
+      return false;
+    return Exclusions->LineExcluded.count(LineNo) ||
+           Exclusions->UnreachableExcluded.count(LineNo);
+  }
 
 public:
   static std::unique_ptr<SourceCoverageView>
   create(StringRef SourceName, const MemoryBuffer &File,
-         const CoverageViewOptions &Options, CoverageData &&CoverageInfo);
+      const CoverageViewOptions &Options, CoverageData &&CoverageInfo,
+      const LcovExclusionSets *Exclusions = nullptr);
 
   virtual ~SourceCoverageView() {}
 
