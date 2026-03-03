@@ -1397,6 +1397,12 @@ int CodeCoverageTool::doExport(int argc, const char **argv,
                                     cl::desc("Unify function instantiations"),
                                     cl::init(true), cl::cat(ExportCategory));
 
+  cl::opt<bool> RespectLcovExclusions(
+      "respect-lcov-exclusions", cl::Optional,
+      cl::desc("Respect LCOV EXCL markers (LINE/START/STOP, BR_*, and "
+               "EXCEPTION_BR_*) in source when exporting coverage"),
+      cl::cat(ExportCategory));
+
   auto Err = commandLineParser(argc, argv);
   if (Err)
     return Err;
@@ -1405,6 +1411,7 @@ int CodeCoverageTool::doExport(int argc, const char **argv,
   ViewOpts.SkipFunctions = SkipFunctions;
   ViewOpts.SkipBranches = SkipBranches;
   ViewOpts.UnifyFunctionInstantiations = UnifyInstantiations;
+  ViewOpts.RespectLcovExclusions = RespectLcovExclusions;
 
   if (ViewOpts.Format != CoverageViewOptions::OutputFormat::Text &&
       ViewOpts.Format != CoverageViewOptions::OutputFormat::Lcov) {
