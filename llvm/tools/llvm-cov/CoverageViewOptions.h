@@ -10,6 +10,7 @@
 #define LLVM_COV_COVERAGEVIEWOPTIONS_H
 
 #include "RenderingSupport.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Config/llvm-config.h"
 #include <vector>
 
@@ -50,6 +51,10 @@ struct CoverageViewOptions {
   // files (e.g., LCOV_EXCL_LINE, LCOV_EXCL_START/STOP, and branch-only and
   // exception-branch variants). Defaults to false for backward compatibility.
   bool RespectLcovExclusions = false;
+  /// Map from coverage-data filenames to local (remapped) filenames.  Set by
+  /// -path-equivalence.  Used by exporters / report generators to open source
+  /// files for LCOV exclusion scanning.
+  const StringMap<std::string> *RemappedFilenames = nullptr;
   bool BinaryCounters;
   OutputFormat Format;
   BranchOutputType ShowBranches;
@@ -67,6 +72,17 @@ struct CoverageViewOptions {
   ColoredRawOstream colored_ostream(raw_ostream &OS,
                                     raw_ostream::Colors Color) const {
     return llvm::colored_ostream(OS, Color, Colors);
+  }
+
+  /// Resolve a coverage-data filename to a local path, using path-equivalence
+  /// remapping if available.
+  StringRef resolveFilename(StringRef Filename) const {
+    if (RemappedFilenames) {
+      auto It = RemappedFilenames->find(Filename);
+      if (It != RemappedFilenames->end())
+        return It->second;
+    }
+    return Filename;
   }
 
   /// Check if an output directory has been specified.

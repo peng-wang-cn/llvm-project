@@ -1434,6 +1434,9 @@ int CodeCoverageTool::doExport(int argc, const char **argv,
     return 1;
   }
 
+  if (!RemappedFilenames.empty())
+    ViewOpts.RemappedFilenames = &RemappedFilenames;
+
   std::unique_ptr<CoverageExporter> Exporter;
 
   switch (ViewOpts.Format) {

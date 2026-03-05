@@ -453,7 +453,8 @@ void CoverageReport::prepareSingleFileReport(const StringRef Filename,
   // Parse LCOV exclusions once per file if requested.
   std::optional<LcovExclusionSets> Excl;
   if (Options.RespectLcovExclusions) {
-    if (auto BufOrErr = MemoryBuffer::getFile(Filename)) {
+    StringRef ResolvedName = Options.resolveFilename(Filename);
+    if (auto BufOrErr = MemoryBuffer::getFile(ResolvedName)) {
       Excl = scanLcovExclusionsFromBuffer(BufOrErr.get()->getBuffer());
     }
   }

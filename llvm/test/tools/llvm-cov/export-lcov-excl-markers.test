@@ -1,0 +1,96 @@
+// Tests that --respect-lcov-exclusions filters DA/BRDA lines from LCOV export
+// and segments/branches from JSON export for these markers:
+//   single-line exclusion, region exclusion (START/STOP),
+//   branch-only single-line, branch-only region (BR_START/STOP).
+//
+// Source: Inputs/excl-markers.cpp (branches at lines 6, 12, 19, 25, 32).
+// Markers:
+//   line 7      single-line excl        => DA:7 removed
+//   lines 11-16 region excl             => DA:12-15 & BRDA:12 removed
+//   line 19     branch-only single-line => BRDA:19 removed (DA:19 kept)
+//   lines 24-29 branch-only region      => BRDA:25 removed (DA:25-28 kept)
+//   line 32     normal (no marker)      => kept as-is
+
+// RUN: llvm-profdata merge %S/Inputs/excl-markers.proftext -o %t.profdata
+
+// ---- LCOV baseline (no exclusions) ----
+// RUN: llvm-cov export -format=lcov %S/Inputs/excl-markers.covmapping \
+// RUN:   -instr-profile %t.profdata -path-equivalence=.,%S/Inputs \
+// RUN:   %S/Inputs/excl-markers.cpp \
+// RUN:   | FileCheck -check-prefix=LCOV-BASE %s
+
+// LCOV-BASE: DA:7,1
+// LCOV-BASE: DA:12,1
+// LCOV-BASE: DA:13,0
+// LCOV-BASE: BRDA:12,
+// LCOV-BASE: BRDA:19,
+// LCOV-BASE: BRDA:25,
+// LCOV-BASE: BRDA:32,
+// LCOV-BASE: BRF:10
+// LCOV-BASE: LF:25
+
+// ---- LCOV with exclusions ----
+// RUN: llvm-cov export -format=lcov --respect-lcov-exclusions \
+// RUN:   %S/Inputs/excl-markers.covmapping \
+// RUN:   -instr-profile %t.profdata -path-equivalence=.,%S/Inputs \
+// RUN:   %S/Inputs/excl-markers.cpp \
+// RUN:   | FileCheck -check-prefix=LCOV-EXCL %s
+
+// Single-line exclusion removes DA:7.
+// LCOV-EXCL-NOT: DA:7,
+
+// Region exclusion removes DA for lines 12-15.
+// LCOV-EXCL-NOT: DA:12,
+// LCOV-EXCL-NOT: DA:13,
+// LCOV-EXCL-NOT: DA:14,
+// LCOV-EXCL-NOT: DA:15,
+
+// Non-excluded lines must remain.
+// LCOV-EXCL: DA:6,1
+// LCOV-EXCL: DA:19,1
+// LCOV-EXCL: DA:25,1
+// LCOV-EXCL: DA:32,1
+// LCOV-EXCL: DA:37,1
+
+// Region exclusion also removes branch on line 12.
+// LCOV-EXCL-NOT: BRDA:12,
+
+// Branch-only single-line exclusion removes BRDA:19.
+// LCOV-EXCL-NOT: BRDA:19,
+
+// Branch-only region exclusion removes BRDA:25.
+// LCOV-EXCL-NOT: BRDA:25,
+
+// Non-excluded branches must remain.
+// LCOV-EXCL: BRDA:6,
+// LCOV-EXCL: BRDA:32,
+
+// Summary counts must reflect exclusions.
+// LCOV-EXCL: BRF:4
+// LCOV-EXCL: LF:20
+
+// ---- JSON with exclusions ----
+// RUN: llvm-cov export -format=text --respect-lcov-exclusions \
+// RUN:   %S/Inputs/excl-markers.covmapping \
+// RUN:   -instr-profile %t.profdata -path-equivalence=.,%S/Inputs \
+// RUN:   %S/Inputs/excl-markers.cpp \
+// RUN:   | python3 -m json.tool | FileCheck -check-prefix=JSON-EXCL %s
+
+// File-level branch array: only lines 6 and 32 should appear.
+// JSON-EXCL:          "branches": [
+// JSON-EXCL-NEXT:         [
+// JSON-EXCL-NEXT:             6,
+// JSON-EXCL:              4
+// JSON-EXCL-NEXT:         ],
+// JSON-EXCL-NEXT:         [
+// JSON-EXCL-NEXT:             32,
+
+// File-level summary: 4 branches, 2 covered.
+// JSON-EXCL:      "branches": {
+// JSON-EXCL-NEXT:     "count": 4,
+// JSON-EXCL-NEXT:     "covered": 2,
+
+// File-level summary: 20 lines, 15 covered.
+// JSON-EXCL:      "lines": {
+// JSON-EXCL-NEXT:     "count": 20,
+// JSON-EXCL-NEXT:     "covered": 15,

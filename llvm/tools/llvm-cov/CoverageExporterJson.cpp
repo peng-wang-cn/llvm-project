@@ -304,7 +304,8 @@ json::Object renderFile(const coverage::CoverageMapping &Coverage,
     const LcovExclusionSets *Excl = nullptr;
     std::optional<LcovExclusionSets> ExclSets;
     if (Options.RespectLcovExclusions) {
-      if (auto BufOrErr = MemoryBuffer::getFile(Filename))
+      StringRef ResolvedName = Options.resolveFilename(Filename);
+      if (auto BufOrErr = MemoryBuffer::getFile(ResolvedName))
         ExclSets = scanLcovExclusionsFromBuffer(BufOrErr.get()->getBuffer());
       if (ExclSets)
         Excl = &*ExclSets;
