@@ -1451,6 +1451,25 @@ int CodeCoverageTool::doExport(int argc, const char **argv,
     break;
   }
 
+  // Scan LCOV exclusions for each source file if requested.
+  if (ViewOpts.RespectLcovExclusions) {
+    std::vector<StringRef> FilesToScan;
+    if (SourceFiles.empty()) {
+      for (StringRef SF : Coverage->getUniqueSourceFiles())
+        if (!IgnoreFilenameFilters.matchesFilename(SF))
+          FilesToScan.push_back(SF);
+    } else {
+      FilesToScan.assign(SourceFiles.begin(), SourceFiles.end());
+    }
+
+    for (StringRef Filename : FilesToScan) {
+      if (auto BufOrErr = MemoryBuffer::getFile(Filename)) {
+        LcovExclusionSets Excl = scanLcovExclusionsFromBuffer(BufOrErr.get()->getBuffer());
+        Exporter->setExclusions(Filename, Excl);
+      }
+    }
+  }
+
   if (SourceFiles.empty())
     Exporter->renderRoot(IgnoreFilenameFilters);
   else

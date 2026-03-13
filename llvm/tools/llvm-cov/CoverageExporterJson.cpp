@@ -261,10 +261,38 @@ json::Array renderFileSegments(const coverage::CoverageData &FileCoverage) {
   return SegmentArray;
 }
 
+json::Array
+renderFileSegmentsFiltered(const coverage::CoverageData &FileCoverage,
+                           StringRef Filename,
+                           const CoverageExporter *Exporter) {
+  json::Array SegmentArray;
+  for (const auto &Segment : FileCoverage) {
+    // Filter out segments on excluded lines
+    if (Exporter && Exporter->isLineExcluded(Filename, Segment.Line))
+      continue;
+    SegmentArray.push_back(renderSegment(Segment));
+  }
+  return SegmentArray;
+}
+
 json::Array renderFileBranches(const coverage::CoverageData &FileCoverage) {
   json::Array BranchArray;
   for (const auto &Branch : FileCoverage.getBranches())
     BranchArray.push_back(renderBranch(Branch));
+  return BranchArray;
+}
+
+json::Array
+renderFileBranchesFiltered(const coverage::CoverageData &FileCoverage,
+                           StringRef Filename,
+                           const CoverageExporter *Exporter) {
+  json::Array BranchArray;
+  for (const auto &Branch : FileCoverage.getBranches()) {
+    // Filter out branches on excluded lines
+    if (Exporter && Exporter->isBranchExcluded(Filename, Branch.LineStart))
+      continue;
+    BranchArray.push_back(renderBranch(Branch));
+  }
   return BranchArray;
 }
 
@@ -278,13 +306,21 @@ json::Array renderFileMCDC(const coverage::CoverageData &FileCoverage) {
 json::Object renderFile(const coverage::CoverageMapping &Coverage,
                         const std::string &Filename,
                         const FileCoverageSummary &FileReport,
-                        const CoverageViewOptions &Options) {
+                        const CoverageViewOptions &Options,
+                        const CoverageExporter *Exporter = nullptr) {
   json::Object File({{"filename", Filename}});
   if (!Options.ExportSummaryOnly) {
     // Calculate and render detailed coverage information for given file.
     auto FileCoverage = Coverage.getCoverageForFile(Filename);
-    File["segments"] = renderFileSegments(FileCoverage);
-    File["branches"] = renderFileBranches(FileCoverage);
+    if (Exporter && Options.RespectLcovExclusions) {
+      File["segments"] =
+          renderFileSegmentsFiltered(FileCoverage, Filename, Exporter);
+      File["branches"] =
+          renderFileBranchesFiltered(FileCoverage, Filename, Exporter);
+    } else {
+      File["segments"] = renderFileSegments(FileCoverage);
+      File["branches"] = renderFileBranches(FileCoverage);
+    }
     File["mcdc_records"] = renderFileMCDC(FileCoverage);
     if (!Options.SkipExpansions) {
       File["expansions"] = renderFileExpansions(Coverage, FileCoverage);
@@ -297,7 +333,8 @@ json::Object renderFile(const coverage::CoverageMapping &Coverage,
 json::Array renderFiles(const coverage::CoverageMapping &Coverage,
                         ArrayRef<std::string> SourceFiles,
                         ArrayRef<FileCoverageSummary> FileReports,
-                        const CoverageViewOptions &Options) {
+                        const CoverageViewOptions &Options,
+                        const CoverageExporter *Exporter = nullptr) {
   ThreadPoolStrategy S = hardware_concurrency(Options.NumThreads);
   if (Options.NumThreads == 0) {
     // If NumThreads is not specified, create one thread for each input, up to
@@ -313,7 +350,7 @@ json::Array renderFiles(const coverage::CoverageMapping &Coverage,
     auto &SourceFile = SourceFiles[I];
     auto &FileReport = FileReports[I];
     Pool.async([&] {
-      auto File = renderFile(Coverage, SourceFile, FileReport, Options);
+      auto File = renderFile(Coverage, SourceFile, FileReport, Options, Exporter);
       {
         std::lock_guard<std::mutex> Lock(FileArrayMutex);
         FileArray.push_back(std::move(File));
@@ -353,7 +390,8 @@ void CoverageExporterJson::renderRoot(ArrayRef<std::string> SourceFiles) {
   FileCoverageSummary Totals = FileCoverageSummary("Totals");
   auto FileReports = CoverageReport::prepareFileReports(Coverage, Totals,
                                                         SourceFiles, Options);
-  auto Files = renderFiles(Coverage, SourceFiles, FileReports, Options);
+  auto Files =
+      renderFiles(Coverage, SourceFiles, FileReports, Options, this);
   // Sort files in order of their names.
   llvm::sort(Files, [](const json::Value &A, const json::Value &B) {
     const json::Object *ObjA = A.getAsObject();
