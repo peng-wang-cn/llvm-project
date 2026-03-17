@@ -41,6 +41,8 @@
 
 #include "CoverageExporterLcov.h"
 #include "CoverageReport.h"
+#include "LcovMarkerScanner.h"
+#include "llvm/Support/MemoryBuffer.h"
 
 using namespace llvm;
 using namespace coverage;
@@ -84,12 +86,15 @@ void renderFunctions(
 }
 
 void renderLineExecutionCounts(raw_ostream &OS,
-                               const coverage::CoverageData &FileCoverage) {
+                               const coverage::CoverageData &FileCoverage,
+                               const LcovExclusionSets *Excl) {
   coverage::LineCoverageIterator LCI{FileCoverage, 1};
   coverage::LineCoverageIterator LCIEnd = LCI.getEnd();
   for (; LCI != LCIEnd; ++LCI) {
     const coverage::LineCoverageStats &LCS = *LCI;
     if (LCS.isMapped()) {
+      if (Excl && Excl->LineExcluded.contains(LCS.getLine()))
+        continue;
       OS << "DA:" << LCS.getLine() << ',' << LCS.getExecutionCount() << '\n';
     }
   }
@@ -181,7 +186,8 @@ void combineInstanceCounts(std::vector<NestedCountedRegion> &Branches) {
 void renderBranchExecutionCounts(raw_ostream &OS,
                                  const coverage::CoverageMapping &Coverage,
                                  const coverage::CoverageData &FileCoverage,
-                                 bool UnifyInstances) {
+                                 bool UnifyInstances,
+                                 const LcovExclusionSets *Excl) {
 
   std::vector<NestedCountedRegion> Branches;
 
@@ -211,6 +217,16 @@ void renderBranchExecutionCounts(raw_ostream &OS,
   // (BranchIndex) as well as based on True/False pairs (PairIndex).
   while (NextBranch != EndBranch) {
     unsigned CurrentLine = NextBranch->getEffectiveLine();
+
+    // Skip branches on excluded lines.
+    if (Excl && (Excl->LineExcluded.contains(CurrentLine) ||
+                 Excl->BranchOnlyExcluded.contains(CurrentLine))) {
+      while (NextBranch != EndBranch &&
+             CurrentLine == NextBranch->getEffectiveLine())
+        NextBranch++;
+      continue;
+    }
+
     unsigned PairIndex = 0;
     unsigned BranchIndex = 0;
 
@@ -250,7 +266,8 @@ void renderBranchSummary(raw_ostream &OS, const FileCoverageSummary &Summary) {
 void renderFile(raw_ostream &OS, const coverage::CoverageMapping &Coverage,
                 const std::string &Filename,
                 const FileCoverageSummary &FileReport, bool ExportSummaryOnly,
-                bool SkipFunctions, bool SkipBranches, bool UnifyInstances) {
+                bool SkipFunctions, bool SkipBranches, bool UnifyInstances,
+                const LcovExclusionSets *Excl) {
   OS << "SF:" << Filename << '\n';
 
   if (!ExportSummaryOnly && !SkipFunctions) {
@@ -261,9 +278,10 @@ void renderFile(raw_ostream &OS, const coverage::CoverageMapping &Coverage,
   if (!ExportSummaryOnly) {
     // Calculate and render detailed coverage information for given file.
     auto FileCoverage = Coverage.getCoverageForFile(Filename);
-    renderLineExecutionCounts(OS, FileCoverage);
+    renderLineExecutionCounts(OS, FileCoverage, Excl);
     if (!SkipBranches)
-      renderBranchExecutionCounts(OS, Coverage, FileCoverage, UnifyInstances);
+      renderBranchExecutionCounts(OS, Coverage, FileCoverage, UnifyInstances,
+                                  Excl);
   }
   if (!SkipBranches)
     renderBranchSummary(OS, FileReport);
@@ -276,10 +294,19 @@ void renderFiles(raw_ostream &OS, const coverage::CoverageMapping &Coverage,
                  ArrayRef<std::string> SourceFiles,
                  ArrayRef<FileCoverageSummary> FileReports,
                  bool ExportSummaryOnly, bool SkipFunctions, bool SkipBranches,
-                 bool UnifyInstances) {
-  for (unsigned I = 0, E = SourceFiles.size(); I < E; ++I)
+                 bool UnifyInstances, bool RespectLcovExclusions) {
+  for (unsigned I = 0, E = SourceFiles.size(); I < E; ++I) {
+    const LcovExclusionSets *Excl = nullptr;
+    LcovExclusionSets ExclSets;
+    if (RespectLcovExclusions && !ExportSummaryOnly) {
+      if (auto BufOrErr = MemoryBuffer::getFile(SourceFiles[I])) {
+        ExclSets = scanLcovExclusionsFromBuffer(BufOrErr.get()->getBuffer());
+        Excl = &ExclSets;
+      }
+    }
     renderFile(OS, Coverage, SourceFiles[I], FileReports[I], ExportSummaryOnly,
-               SkipFunctions, SkipBranches, UnifyInstances);
+               SkipFunctions, SkipBranches, UnifyInstances, Excl);
+  }
 }
 
 } // end anonymous namespace
@@ -299,5 +326,6 @@ void CoverageExporterLcov::renderRoot(ArrayRef<std::string> SourceFiles) {
                                                         SourceFiles, Options);
   renderFiles(OS, Coverage, SourceFiles, FileReports, Options.ExportSummaryOnly,
               Options.SkipFunctions, Options.SkipBranches,
-              Options.UnifyFunctionInstantiations);
+              Options.UnifyFunctionInstantiations,
+              Options.RespectLcovExclusions);
 }

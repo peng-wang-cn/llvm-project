@@ -53,7 +53,9 @@
 
 #include "CoverageExporterJson.h"
 #include "CoverageReport.h"
+#include "LcovMarkerScanner.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/Threading.h"
@@ -254,17 +256,26 @@ json::Array renderFileExpansions(const coverage::CoverageMapping &Coverage,
   return ExpansionArray;
 }
 
-json::Array renderFileSegments(const coverage::CoverageData &FileCoverage) {
+json::Array renderFileSegments(const coverage::CoverageData &FileCoverage,
+                               const LcovExclusionSets *Excl) {
   json::Array SegmentArray;
-  for (const auto &Segment : FileCoverage)
+  for (const auto &Segment : FileCoverage) {
+    if (Excl && Excl->LineExcluded.contains(Segment.Line))
+      continue;
     SegmentArray.push_back(renderSegment(Segment));
+  }
   return SegmentArray;
 }
 
-json::Array renderFileBranches(const coverage::CoverageData &FileCoverage) {
+json::Array renderFileBranches(const coverage::CoverageData &FileCoverage,
+                               const LcovExclusionSets *Excl) {
   json::Array BranchArray;
-  for (const auto &Branch : FileCoverage.getBranches())
+  for (const auto &Branch : FileCoverage.getBranches()) {
+    if (Excl && (Excl->LineExcluded.contains(Branch.LineStart) ||
+                 Excl->BranchOnlyExcluded.contains(Branch.LineStart)))
+      continue;
     BranchArray.push_back(renderBranch(Branch));
+  }
   return BranchArray;
 }
 
@@ -283,8 +294,19 @@ json::Object renderFile(const coverage::CoverageMapping &Coverage,
   if (!Options.ExportSummaryOnly) {
     // Calculate and render detailed coverage information for given file.
     auto FileCoverage = Coverage.getCoverageForFile(Filename);
-    File["segments"] = renderFileSegments(FileCoverage);
-    File["branches"] = renderFileBranches(FileCoverage);
+
+    // Scan for LCOV exclusion markers if requested.
+    const LcovExclusionSets *Excl = nullptr;
+    LcovExclusionSets ExclSets;
+    if (Options.RespectLcovExclusions) {
+      if (auto BufOrErr = MemoryBuffer::getFile(Filename)) {
+        ExclSets = scanLcovExclusionsFromBuffer(BufOrErr.get()->getBuffer());
+        Excl = &ExclSets;
+      }
+    }
+
+    File["segments"] = renderFileSegments(FileCoverage, Excl);
+    File["branches"] = renderFileBranches(FileCoverage, Excl);
     File["mcdc_records"] = renderFileMCDC(FileCoverage);
     if (!Options.SkipExpansions) {
       File["expansions"] = renderFileExpansions(Coverage, FileCoverage);
