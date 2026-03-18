@@ -1,0 +1,43 @@
+# Test --respect-lcov-exclusions with llvm-cov export
+
+# Create a source file with LCOV exclusion markers
+RUN: mkdir -p %T/lcov-excl-export
+RUN: cat > %T/lcov-excl-export/test.c << 'EOF'
+#include <stdio.h>
+int main(int argc, char *argv[]) {
+    int x = 0;
+    x = 1; // LCOV_EXCL_LINE
+    x = 2;
+    // LCOV_EXCL_START
+    x = 3;
+    // LCOV_EXCL_STOP
+    x = 4;
+    if (x > 0) { x = 5; } // LCOV_EXCL_BR_LINE
+    if (x > 10) { x = 6; } // LCOV_EXCL_BR_START
+    // LCOV_EXCL_BR_STOP
+    return x;
+}
+EOF
+
+# Test LCOV format export with --respect-lcov-exclusions
+# Without exclusions, all lines should be reported
+# With exclusions, lines with LCOV_EXCL_LINE and between LCOV_EXCL_START/STOP should be excluded
+
+RUN: llvm-cov export --format=lcov %S/Inputs/report.covmapping -instr-profile %S/Inputs/report.profdata %T/lcov-excl-export/test.c 2>&1 | FileCheck %s --check-prefix=LCOV-NOEXCL
+RUN: llvm-cov export --format=lcov --respect-lcov-exclusions %S/Inputs/report.covmapping -instr-profile %S/Inputs/report.profdata %T/lcov-excl-export/test.c 2>&1 | FileCheck %s --check-prefix=LCOV-EXCL
+
+# Test JSON format export with --respect-lcov-exclusions
+RUN: llvm-cov export --format=text %S/Inputs/report.covmapping -instr-profile %S/Inputs/report.profdata %T/lcov-excl-export/test.c 2>&1 | FileCheck %s --check-prefix=JSON-NOEXCL
+RUN: llvm-cov export --format=text --respect-lcov-exclusions %S/Inputs/report.covmapping -instr-profile %S/Inputs/report.profdata %T/lcov-excl-export/test.c 2>&1 | FileCheck %s --check-prefix=JSON-EXCL
+
+# LCOV-NOEXCL: SF:
+# LCOV-NOEXCL: end_of_record
+
+# LCOV-EXCL: SF:
+# LCOV-EXCL: end_of_record
+
+# JSON-NOEXCL: "version":
+# JSON-NOEXCL: "data":
+
+# JSON-EXCL: "version":
+# JSON-EXCL: "data":

@@ -42,6 +42,7 @@
 #include "CoverageExporterLcov.h"
 #include "CoverageReport.h"
 #include "LcovMarkerScanner.h"
+#include "llvm/Support/MemoryBuffer.h"
 
 using namespace llvm;
 using namespace coverage;
@@ -318,7 +319,21 @@ void CoverageExporterLcov::renderRoot(ArrayRef<std::string> SourceFiles) {
   FileCoverageSummary Totals = FileCoverageSummary("Totals");
   auto FileReports = CoverageReport::prepareFileReports(Coverage, Totals,
                                                         SourceFiles, Options);
+
+  // Scan for LCOV exclusions if requested.
+  std::vector<std::optional<LcovExclusionSets>> ExclusionSets;
+  if (Options.RespectLcovExclusions) {
+    ExclusionSets.reserve(SourceFiles.size());
+    for (const auto &Filename : SourceFiles) {
+      if (auto BufOrErr = MemoryBuffer::getFile(Filename))
+        ExclusionSets.push_back(scanLcovExclusionsFromBuffer(
+            BufOrErr.get()->getBuffer()));
+      else
+        ExclusionSets.push_back(std::nullopt);
+    }
+  }
+
   renderFiles(OS, Coverage, SourceFiles, FileReports, Options.ExportSummaryOnly,
               Options.SkipFunctions, Options.SkipBranches,
-              Options.UnifyFunctionInstantiations);
+              Options.UnifyFunctionInstantiations, ExclusionSets);
 }

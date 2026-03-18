@@ -1,0 +1,40 @@
+# Test --respect-lcov-exclusions with llvm-cov export
+# This test verifies that LCOV exclusion markers are respected during export.
+
+# Use the branch-c-general test inputs which have coverage data for branches
+
+RUN: cp %S/Inputs/branch-c-general.c %T/lcov-excl-test.c
+
+# Run export without exclusions - should include all lines
+RUN: llvm-cov export --format=lcov %S/Inputs/branch-c-general.o32l -instr-profile %S/Inputs/branch-c-general.proftext %T/lcov-excl-test.c 2>&1 | FileCheck %s --check-prefix=NOEXCL
+
+# Now modify the source with LCOV_EXCL markers
+RUN: sed -i 's/for (i = 0; i < 100; ++i) {/for (i = 0; i < 100; ++i) { \/\/ LCOV_EXCL_LINE/' %T/lcov-excl-test.c
+RUN: sed -i 's/void conditionals() {/void conditionals() { \/\/ LCOV_EXCL_START/' %T/lcov-excl-test.c
+RUN: sed -i 's/^}$/\/\/ LCOV_EXCL_STOP\n}/' %T/lcov-excl-test.c
+
+# Run export with exclusions - should exclude marked lines
+RUN: llvm-cov export --format=lcov --respect-lcov-exclusions %S/Inputs/branch-c-general.o32l -instr-profile %S/Inputs/branch-c-general.proftext %T/lcov-excl-test.c 2>&1 | FileCheck %s --check-prefix=EXCL
+
+# Verify that without exclusions, we see line 9 (for loop)
+NOEXCL: DA:9,{{[0-9]+}}
+
+# Verify that with exclusions, line 9 is NOT present (it has LCOV_EXCL_LINE)
+EXCL-NOT: DA:9,{{[0-9]+}}
+
+# Verify line summary changes (fewer lines when exclusions are applied)
+# Without exclusions: 13 lines
+NOEXCL: LF:{{[0-9]+}}
+NOEXCL: LH:{{[0-9]+}}
+
+# With exclusions: fewer lines
+EXCL: LF:{{[0-9]+}}
+EXCL: LH:{{[0-9]+}}
+
+# Also test JSON format
+RUN: llvm-cov export --format=text --respect-lcov-exclusions %S/Inputs/branch-c-general.o32l -instr-profile %S/Inputs/branch-c-general.proftext %T/lcov-excl-test.c 2>&1 | FileCheck %s --check-prefix=JSON-EXCL
+
+JSON-EXCL: "version":
+JSON-EXCL: "data":
+JSON-EXCL: "filename":
+JSON-EXCL: "summary":

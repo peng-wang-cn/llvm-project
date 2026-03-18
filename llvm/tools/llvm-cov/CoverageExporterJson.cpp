@@ -53,8 +53,10 @@
 
 #include "CoverageExporterJson.h"
 #include "CoverageReport.h"
+#include "LcovMarkerScanner.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/Threading.h"
 #include <algorithm>
@@ -254,17 +256,28 @@ json::Array renderFileExpansions(const coverage::CoverageMapping &Coverage,
   return ExpansionArray;
 }
 
-json::Array renderFileSegments(const coverage::CoverageData &FileCoverage) {
+json::Array renderFileSegments(const coverage::CoverageData &FileCoverage,
+                               const LcovExclusionSets *Excl = nullptr) {
   json::Array SegmentArray;
-  for (const auto &Segment : FileCoverage)
+  for (const auto &Segment : FileCoverage) {
+    if (Excl && Segment.HasCount && Excl->LineExcluded.count(Segment.Line))
+      continue;
     SegmentArray.push_back(renderSegment(Segment));
+  }
   return SegmentArray;
 }
 
-json::Array renderFileBranches(const coverage::CoverageData &FileCoverage) {
+json::Array renderFileBranches(const coverage::CoverageData &FileCoverage,
+                               const LcovExclusionSets *Excl = nullptr) {
   json::Array BranchArray;
-  for (const auto &Branch : FileCoverage.getBranches())
+  for (const auto &Branch : FileCoverage.getBranches()) {
+    if (Excl) {
+      unsigned Line = Branch.LineStart;
+      if (Excl->LineExcluded.count(Line) || Excl->BranchOnlyExcluded.count(Line))
+        continue;
+    }
     BranchArray.push_back(renderBranch(Branch));
+  }
   return BranchArray;
 }
 
@@ -278,13 +291,14 @@ json::Array renderFileMCDC(const coverage::CoverageData &FileCoverage) {
 json::Object renderFile(const coverage::CoverageMapping &Coverage,
                         const std::string &Filename,
                         const FileCoverageSummary &FileReport,
-                        const CoverageViewOptions &Options) {
+                        const CoverageViewOptions &Options,
+                        const LcovExclusionSets *Excl = nullptr) {
   json::Object File({{"filename", Filename}});
   if (!Options.ExportSummaryOnly) {
     // Calculate and render detailed coverage information for given file.
     auto FileCoverage = Coverage.getCoverageForFile(Filename);
-    File["segments"] = renderFileSegments(FileCoverage);
-    File["branches"] = renderFileBranches(FileCoverage);
+    File["segments"] = renderFileSegments(FileCoverage, Excl);
+    File["branches"] = renderFileBranches(FileCoverage, Excl);
     File["mcdc_records"] = renderFileMCDC(FileCoverage);
     if (!Options.SkipExpansions) {
       File["expansions"] = renderFileExpansions(Coverage, FileCoverage);
@@ -297,7 +311,8 @@ json::Object renderFile(const coverage::CoverageMapping &Coverage,
 json::Array renderFiles(const coverage::CoverageMapping &Coverage,
                         ArrayRef<std::string> SourceFiles,
                         ArrayRef<FileCoverageSummary> FileReports,
-                        const CoverageViewOptions &Options) {
+                        const CoverageViewOptions &Options,
+                        ArrayRef<std::optional<LcovExclusionSets>> ExclusionSets) {
   ThreadPoolStrategy S = hardware_concurrency(Options.NumThreads);
   if (Options.NumThreads == 0) {
     // If NumThreads is not specified, create one thread for each input, up to
@@ -312,8 +327,11 @@ json::Array renderFiles(const coverage::CoverageMapping &Coverage,
   for (unsigned I = 0, E = SourceFiles.size(); I < E; ++I) {
     auto &SourceFile = SourceFiles[I];
     auto &FileReport = FileReports[I];
+    const LcovExclusionSets *Excl = nullptr;
+    if (I < ExclusionSets.size() && ExclusionSets[I].has_value())
+      Excl = &*ExclusionSets[I];
     Pool.async([&] {
-      auto File = renderFile(Coverage, SourceFile, FileReport, Options);
+      auto File = renderFile(Coverage, SourceFile, FileReport, Options, Excl);
       {
         std::lock_guard<std::mutex> Lock(FileArrayMutex);
         FileArray.push_back(std::move(File));
@@ -353,7 +371,22 @@ void CoverageExporterJson::renderRoot(ArrayRef<std::string> SourceFiles) {
   FileCoverageSummary Totals = FileCoverageSummary("Totals");
   auto FileReports = CoverageReport::prepareFileReports(Coverage, Totals,
                                                         SourceFiles, Options);
-  auto Files = renderFiles(Coverage, SourceFiles, FileReports, Options);
+
+  // Scan for LCOV exclusions if requested.
+  std::vector<std::optional<LcovExclusionSets>> ExclusionSets;
+  if (Options.RespectLcovExclusions) {
+    ExclusionSets.reserve(SourceFiles.size());
+    for (const auto &Filename : SourceFiles) {
+      if (auto BufOrErr = MemoryBuffer::getFile(Filename))
+        ExclusionSets.push_back(scanLcovExclusionsFromBuffer(
+            BufOrErr.get()->getBuffer()));
+      else
+        ExclusionSets.push_back(std::nullopt);
+    }
+  }
+
+  auto Files = renderFiles(Coverage, SourceFiles, FileReports, Options,
+                           ExclusionSets);
   // Sort files in order of their names.
   llvm::sort(Files, [](const json::Value &A, const json::Value &B) {
     const json::Object *ObjA = A.getAsObject();
